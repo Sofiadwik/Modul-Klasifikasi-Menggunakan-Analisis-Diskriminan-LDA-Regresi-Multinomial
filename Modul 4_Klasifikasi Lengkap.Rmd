@@ -1,0 +1,367 @@
+---
+title: "Modul 4_Klasifikasi_LDA & Regresi Multinomial"
+output: html_document
+---
+
+## **Implementasi Analisis Diskriminan dan Regresi Logistik Multinomial pada Pemeliharaan Prediktif Mesin **
+
+### Cantika Latifatul Nur Ella (24031554023), Sofia Dwi Kinasih (24031554079), M. Naza Firmansyah (24031554164)
+### Dosen Pengampu Mata Kuliah: Dinda Galuh Guminta, M.Stat.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+```{r}
+#install.packages("heplots")
+```
+
+
+```{r}
+#install.packages(c("MASS","dplyr","MVN","biotools","car"))
+
+library(MASS)
+library(dplyr)
+library(MVN)
+library(biotools)
+library(car)
+library(heplots)
+```
+
+#### Load Data
+```{r}
+data <- read.csv("D:/SEMESTER 4/Materi Sofia/AnMul/Modul 4_klasifikasi/predictive_maintenance1.csv")
+```
+
+```{r}
+# lihat struktur data
+str(data)
+head(data)
+```
+
+#### Statistik Deskriptif
+```{r}
+# ringkasan umum
+summary(data)
+
+# statistik numerik 
+summary(data[, sapply(data, is.numeric)])
+
+# distribusi variabel dependen
+table(data$Failure_Type)
+prop.table(table(data$Failure_Type))
+```
+
+#### Preprocessing
+```{r}
+#ubah ke faktor
+data$Failure.Type <- as.factor(data$Failure.Type)
+data$Type <- as.factor(data$Type)
+```
+
+```{r}
+names(data)
+```
+
+
+```{r}
+#buang var tidak diperlukan
+data <- data[, !(names(data) %in% c("UDI","Product.ID","Target"))]
+```
+
+```{r}
+str(data)
+```
+#### Standarisasi
+```{r}
+# ambil numerik saja
+num_cols <- sapply(data, is.numeric)
+
+# scaling
+data[, num_cols] <- scale(data[, num_cols])
+```
+
+#### Visualisasi
+```{r}
+par(mfrow=c(1,3))
+boxplot(data$Rotational.speed..rpm., main="Rotational Speed [rpm]", col="lightblue")
+boxplot(data$Torque..Nm., main="Torque [Nm]", col="lightgreen")
+boxplot(data$Tool.wear..min., main="Tool Wear [min]", col="pink")
+par(mfrow=c(1,1))
+```
+
+
+### Uji Asumsi Analisis Diskriminan (LDA)
+```{r}
+cat("UJI NORMALITAS MULTIVARIAT PER KELOMPOK")
+
+by(data[, num_cols], data$Failure.Type, function(sub){
+  hasil <- MVN::mvn(sub)
+  print(hasil$multivariate_normality)
+})
+```
+
+```{r}
+cat("UJI HOMOGENITAS KOVARIANS (BOX M)")
+print(biotools::boxM(data[, num_cols], data$Failure.Type))
+```
+
+```{r}
+cat("UJI MULTIKOLINEARITAS (VIF)")
+vif_model <- lm(Air.temperature..K. ~ Process.temperature..K. + Rotational.speed..rpm. + Torque..Nm. + Tool.wear..min., data=data)
+print(car::vif(vif_model))
+```
+
+```{r}
+cat("UJI INDEPENDENSI (KORELASI)")
+print(cor(data[, num_cols]))
+```
+
+```{r}
+cat("UJI OUTLIER (MAHALANOBIS)")
+X <- data[, num_cols]
+mahal <- mahalanobis(X, colMeans(X), cov(X))
+cut <- qchisq(0.999, df=ncol(X))
+```
+
+```{r}
+data_lda <- data[mahal < cut, ]
+cat("Jumlah data setelah buang outlier:", nrow(data_lda), "\n")
+```
+
+
+### ANALISIS DISKRIMINAN LINEAR (LDA)
+#### 1. Bentuk fungsi diskriminan
+```{r}
+lda_model <- lda(Failure.Type ~ ., data = data_lda)
+
+lda_model
+```
+
+#### Koefisien fungsi diskriminan
+```{r}
+lda_model$scaling
+```
+
+#### menentukan signifikasi variabel diskriminan
+```{r}
+# ambil variabel numerik
+X <- data_lda[, sapply(data, is.numeric)]
+
+# MANOVA
+manova_model <- manova(as.matrix(X) ~ data_lda$Failure.Type)
+
+# uji signifikansi (Wilks Lambda)
+summary(manova_model, test = "Wilks")
+```
+
+```{r}
+summary.aov(manova_model)
+```
+
+Hasil uji MANOVA menunjukkan bahwa variabel independen secara simultan memiliki perbedaan yang signifikan antar kelompok, ditunjukkan oleh nilai p-value < 0,05.
+
+#### Prediksi
+```{r}
+pred <- predict(lda_model)
+```
+
+#### Confusion Matriks
+```{r}
+conf_matrix <- table(
+  Predicted = pred$class,
+  Actual = data_lda$Failure.Type
+)
+
+conf_matrix
+```
+
+```{r}
+library(ggplot2)
+
+# ubah ke data frame
+cm_df <- as.data.frame(conf_matrix)
+
+ggplot(cm_df, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), color = "black") +
+  scale_fill_gradient(low = "white", high = "blue") +
+  theme_minimal() +
+  labs(title = "Confusion Matrix Heatmap",
+       x = "Actual",
+       y = "Predicted")
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(scales)
+
+# ubah ke dataframe
+cm_df <- as.data.frame(conf_matrix)
+
+# hitung persentase per baris (biar adil per kelas)
+cm_df <- cm_df %>%
+  group_by(Actual) %>%
+  mutate(Percentage = Freq / sum(Freq))
+
+# plot
+ggplot(cm_df, aes(x = Actual, y = Predicted, fill = Percentage)) +
+  geom_tile(color = "white", size = 0.5) +
+  
+  geom_text(aes(label = paste0(Freq, "\n(", percent(Percentage, accuracy = 0.1), ")")),
+            size = 3.5) +
+  
+  scale_fill_gradient(low = "#f7fbff", high = "#08306b") +
+  
+  labs(
+    title = "Confusion Matrix (LDA Model)",
+    subtitle = "Count dan Persentase per Kelas Aktual",
+    x = "Actual Class",
+    y = "Predicted Class",
+    fill = "Proportion"
+  ) +
+  
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 12),
+    axis.text.x = element_text(angle = 30, hjust = 1),
+    panel.grid = element_blank()
+  )
+```
+
+Visualisasi confusion matrix dalam bentuk heatmap menunjukkan bahwa model memiliki tingkat akurasi tinggi pada kelas “No Failure”, namun masih mengalami kesalahan klasifikasi pada kelas kegagalan lainnya, terutama pada kelas dengan jumlah data yang lebih sedikit.
+
+#### Evaluasi APER
+```{r}
+n <- sum(conf_matrix)
+correct <- sum(diag(conf_matrix))
+error <- n - correct
+
+APER <- error / n
+APER
+```
+
+#### Metrik Evaluasi lain
+```{r}
+library(caret)
+
+cm <- confusionMatrix(pred$class, data_lda$Failure.Type)
+
+cm
+```
+
+```{r}
+# akurasi
+cm$overall['Accuracy']
+
+# precision per kelas
+cm$byClass[, "Precision"]
+
+# recall per kelas
+cm$byClass[, "Recall"]
+
+# F1-score per kelas
+cm$byClass[, "F1"]
+```
+
+```{r}
+metrics <- data.frame(
+  Precision = cm$byClass[, "Precision"],
+  Recall = cm$byClass[, "Recall"],
+  F1_Score = cm$byClass[, "F1"]
+)
+
+metrics
+```
+Nilai APER sebesar 0.0267785 menunjukkan bahwa tingkat kesalahan klasifikasi model relatif kecil. Namun, berdasarkan evaluasi lebih lanjut menggunakan precision, recall, dan F1-score, diketahui bahwa performa model cenderung lebih baik pada kelas mayoritas dibandingkan kelas minoritas. Hal ini menunjukkan adanya pengaruh ketidakseimbangan data terhadap kinerja model, sehingga evaluasi tidak hanya bergantung pada akurasi, tetapi juga mempertimbangkan metrik lain seperti recall dan F1-score.
+
+
+### Uji ASUMSI Regresi Multinomial
+```{r}
+cat("UJI LINEARITY LOGIT (BOX-TIDWELL")
+data$logAirTemp <- log(data$Air.temperature..K.)
+bt_model <- nnet::multinom(Failure.Type ~ Air.temperature..K. + logAirTemp, data=data)
+print(summary(bt_model))
+```
+
+```{r}
+cat("UJI MULTIKOLINEARITAS (VIF)")
+vif_multi <- lm(Air.temperature..K. ~ Process.temperature..K. + Rotational.speed..rpm. + Torque..Nm. + Tool.wear..min., data=data)
+print(car::vif(vif_multi))
+```
+
+```{r}
+cat("UJI OUTLIER (MAHALANOBIS DISTANCE)")
+mahal <- mahalanobis(X, colMeans(X), cov(X))
+cut <- qchisq(0.999, df=ncol(X))
+outlier_index <- which(mahal > cut)
+print(outlier_index)
+```
+
+```{r}
+cat("UJI INDEPENDENSI (DURBIN WATSON)")
+dw2 <- car::durbinWatsonTest(lm(Air.temperature..K. ~ Process.temperature..K., data = data))
+print(dw2)
+```
+
+### Uji Regresi Multinomial
+```{r}
+#install.packages("brant")
+#install.packages("mlogit")
+#install.packages("lmtest")
+library(brant)      
+library(mlogit)     
+library(lmtest)
+```
+
+```{r}
+#install.packages("nnet")
+library(nnet)
+```
+
+
+```{r}
+model_multi <- multinom(Failure.Type ~ Air.temperature..K. + Process.temperature..K. + Rotational.speed..rpm. + Torque..Nm. + Tool.wear..min., data=data)
+```
+
+```{r}
+summary(model_multi)
+```
+
+
+
+```{r}
+model_multi_null <- multinom(Failure.Type ~ 1, data=data)
+```
+
+#### Uji Model Simultan
+```{r}
+lrtest(model_multi_null, model_multi)
+```
+Berdasarkan hasil Likelihood Ratio Test diperoleh nilai Chi-Square sebesar 2722,4 dengan p-value < 0,05. Hasil tersebut menunjukkan bahwa model regresi multinomial dengan variabel independen memiliki performa yang secara signifikan lebih baik dibandingkan model tanpa variabel independen (null model). Dengan demikian, variabel air temperature, process temperature, rotational speed, torque, dan tool wear secara simultan berpengaruh signifikan terhadap klasifikasi jenis kegagalan mesin (Failure Type).
+
+#### Uji Parsial Variabel
+```{r}
+z_stats <- summary(model_multi)$coefficients / summary(model_multi)$standard.errors
+```
+
+```{r}
+p_values <- (1 - pnorm(abs(z_stats), 0, 1)) * 2
+print(p_values)
+```
+Berdasarkan hasil uji parsial pada regresi multinomial, sebagian besar variabel independen memiliki nilai p-value kurang dari 0,05, sehingga berpengaruh signifikan terhadap klasifikasi jenis kegagalan mesin. Variabel air temperature, process temperature, dan rotational speed menunjukkan pengaruh yang sangat signifikan pada hampir seluruh kategori kegagalan. Namun, terdapat beberapa variabel yang tidak signifikan pada kategori tertentu, misalnya tool wear pada kelas No Failure dan Random Failures, serta torque pada kelas Tool Wear Failure.
+
+#### Odds Ratio
+```{r}
+exp(coef(model_multi))
+```
+Berdasarkan hasil odds ratio, terlihat bahwa beberapa variabel memiliki pengaruh yang cukup besar terhadap peluang terjadinya jenis kegagalan mesin tertentu. Variabel rotational speed dan process temperature memiliki nilai odds ratio yang sangat tinggi pada hampir seluruh kategori kegagalan, yang menunjukkan bahwa peningkatan kedua variabel tersebut dapat meningkatkan peluang terjadinya kegagalan mesin dibandingkan kategori acuan. Selain itu, variabel torque juga menunjukkan pengaruh yang sangat besar terutama pada kategori Power Failure dan Overstrain Failure. Sementara itu, variabel tool wear memiliki pengaruh paling dominan pada kategori Tool Wear Failure dan Overstrain Failure, yang ditunjukkan oleh nilai odds ratio yang tinggi.
+
+
+Sumber dataset: https://www.kaggle.com/datasets/shivamb/machine-predictive-maintenance-classification
